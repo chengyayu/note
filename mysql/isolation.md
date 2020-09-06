@@ -146,7 +146,19 @@ update t set c=5 where id=0; /*(0,5,5)*/
 - **优化1：** 唯一索引上的等值查询，next-key lock 退化为行锁。
 - **优化2：** 普通索引上的等值查询，向右遍历时且最后一个值不满足等值条件的时候，next-key lock 退化为间隙锁。
 
-**示例1**
+> **示例1：唯一索引等值查询间隙锁**
+
+![Image of MVCC](./static/jiasuo6.png)
+
+由于表 t 中没有 id=7 的记录
+
+根据原则 1，加锁单位是 next-key lock，session A 加锁范围就是 (5,10]；
+
+同时根据优化 2，这是一个等值查询 (id=7)，而 id=10 不满足查询条件，next-key lock 退化成间隙锁，因此最终加锁的范围是 (5,10)。
+
+所以，session B 要往这个间隙里面插入 id=8 的记录会被锁住，但是 session C 修改 id=10 这行是可以的。
+
+> **示例2：普通索引等值锁**
 
 ![Image of MVCC](./static/jiasuo1.png)
 
@@ -162,9 +174,35 @@ update t set c=5 where id=0; /*(0,5,5)*/
 
 根据原则 2 ，只有访问到的对象才会加锁，这个查询使用覆盖索引，并不需要访问主键索引，所以主键索引上没有加任何锁，这就是为什么 session B 的 update 语句可以执行完成。
 
-但 session C 要插入一个 (7,7,7) 的记录，就会被 session A 的间隙锁 (5,10) 锁住。需要注意，在这个例子中，lock in share mode 只锁覆盖索引，但是如果是 for update 就不一样了。 执行 for update 时，系统会认为你接下来要更新数据，因此会顺便给主键索引上满足条件的行加上行锁。
+但 session C 要插入一个 (7,7,7) 的记录，就会被 session A 的间隙锁 (5,10) 锁住。
 
-**示例2**
+需要注意，在这个例子中，lock in share mode 只锁覆盖索引，但是如果是 for update 就不一样了。 执行 for update 时，系统会认为你接下来要更新数据，因此会顺便给主键索引上满足条件的行加上行锁。
+
+> **示例3：主键索引范围锁**
+
+![Image of MVCC](./static/jiasuo_shili_3.png)
+
+开始执行的时候，要找到第一个 id=10 的行，因此本该是 next-key lock(5,10]。 根据优化 1， 主键 id 上的等值条件，退化成行锁，只加了 id=10 这一行的行锁。
+
+范围查找就往后继续找，找到 id=15 这一行停下来，因此需要加 next-key lock(10,15]。
+
+所以，session A 这时候锁的范围就是主键索引上，
+
+需要注意一点，首次 session A 定位查找 id=10 的行的时候，是当做等值查询来判断的，而向右扫描到 id=15 的时候，用的是范围查询判断。
+
+> **示例4：普通索引范围锁**
+
+![Image of MVCC](./static/jiasuo_shili_4.png)
+
+在第一次用 c=10 定位记录的时候，索引 c 上加了 (5,10]这个 next-key lock 后，由于索引 c 是非唯一索引，没有优化规则，也就是说不会蜕变为行锁，因此最终 sesion A 加的锁是，索引 c 上的 (5,10] 和 (10,15] 这两个 next-key lock。
+
+所以从结果上来看，sesson B 要插入（8,8,8) 的这个 insert 语句时就被堵住了。这里需要扫描到 c=15 才停止扫描，是合理的，因为 InnoDB 要扫到 c=15，才知道不需要继续往后找了。
+
+**示例5：普通索引存在"等值"的例子**
+
+```sql
+insert into t values(30,10,30);
+```
 
 ![Image of MVCC](./static/jiasuo2.png)
 
@@ -175,7 +213,7 @@ session A 在遍历的时候，先访问第一个 c=10 的记录。同样地，�
 如下图所示：
 ![Image of MVCC](./static/jiasuo3.png)
 
-**示例3**
+**示例6：limit语句**
 
 ![Image of MVCC](./static/jiasuo4.png)
 
